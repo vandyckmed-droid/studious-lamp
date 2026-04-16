@@ -1,19 +1,15 @@
 # studious-lamp
 
-Quantitative midcap stock ranking tool, deployed on [Railway](https://railway.app).
+Quantitative midcap stock ranking tool. Runs in [Pyto](https://pyto.app) on iPhone/iPad.
 
-## Local development
+## Setup in Pyto
 
-```bash
-pip install -r requirements.txt
-python app.py
-```
+1. Open Pyto on your phone
+2. Go to the **PyPI** tab (puzzle piece icon)
+3. Install these packages: `yfinance`, `pandas`, `lxml`
+4. Clone or download this repo
+5. Open `app.py` and tap **Run**
 
-Then open [http://localhost:3000](http://localhost:3000).
+## What it does
 
-## Deploying to Railway
-
-1. Go to [railway.app](https://railway.app) and sign in with GitHub
-2. Click **New Project** → **Deploy from GitHub Repo**
-3. Select this repo (`vandyckmed-droid/studious-lamp`)
-4. Railway auto-detects Python and deploys
+Pulls the ~400 S&P MidCap 400 (MDY) stocks, downloads 1 month of closing prices, and shows a ranked table sorted by 1-month performance.
