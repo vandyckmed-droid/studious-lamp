@@ -2,20 +2,14 @@
 
 Quantitative midcap stock ranking tool. Runs in [Pythonista](http://omz-software.com/pythonista/) on iPhone/iPad.
 
-## Setup (one time)
+## Setup
 
-1. Open Pythonista
-2. Install StaSh (a terminal for Pythonista) — tap **+** > **Script**, paste this, and run it:
-   ```python
-   import requests as r; exec(r.get('https://bit.ly/get-stash').text)
-   ```
-3. Restart Pythonista
-4. Open `launch_stash.py` and run it
-5. In StaSh, type: `pip install yfinance`
-6. Clone this repo or copy the files into Pythonista
+1. Copy `app.py` and `tickers.txt` into Pythonista
+2. Edit `tickers.txt` with your tickers (one per line)
+3. Open `app.py` and tap **Run**
 
-## Usage
+No extra packages needed — uses only `requests` (built into Pythonista).
 
-1. Edit `tickers.txt` with your universe (one ticker per line)
-2. Run `app.py`
-3. See a ranked table of stocks sorted by 1-month price change
+## What it does
+
+Pulls closing prices from Yahoo Finance for every ticker in `tickers.txt` and prints a ranked table sorted by 1-month price change.
