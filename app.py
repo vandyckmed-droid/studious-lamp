@@ -60,13 +60,21 @@ def fetch_prices(ticker):
         return None
 
 
+def ts_to_date(ts):
+    """Convert a Unix timestamp to a date string (YYYY-MM-DD)."""
+    return time.strftime("%Y-%m-%d", time.gmtime(ts))
+
+
 def daily_log_returns(daily):
-    """Convert daily (timestamp, close) pairs to daily log returns."""
+    """Convert daily (timestamp, close) pairs to daily log returns.
+
+    Returns list of (date_str, log_return) tuples.
+    """
     returns = []
     for i in range(1, len(daily)):
-        ts = daily[i][0]
+        date = ts_to_date(daily[i][0])
         lr = math.log(daily[i][1]) - math.log(daily[i - 1][1])
-        returns.append((ts, lr))
+        returns.append((date, lr))
     return returns
 
 
@@ -128,16 +136,16 @@ def calc_signals(daily, mdy_returns_by_ts):
     stock_rets = daily_log_returns(daily)
 
     # Filter to the 12-1 window (skip most recent month)
-    cutoff_1m = last_ts - (30 * 86400)
-    cutoff_12m = last_ts - (365 * 86400)
+    date_1m = ts_to_date(last_ts - (30 * 86400))
+    date_12m = ts_to_date(last_ts - (365 * 86400))
 
     stock_x = []  # MDY returns
     stock_y = []  # stock returns
 
-    for ts, ret in stock_rets:
-        if cutoff_12m <= ts <= cutoff_1m:
-            # Find matching MDY return (closest timestamp)
-            mdy_ret = mdy_returns_by_ts.get(ts)
+    for date, ret in stock_rets:
+        if date_12m <= date <= date_1m:
+            # Match by date string
+            mdy_ret = mdy_returns_by_ts.get(date)
             if mdy_ret is not None:
                 stock_x.append(mdy_ret)
                 stock_y.append(ret)
@@ -225,7 +233,7 @@ if __name__ == "__main__":
         raise SystemExit(1)
 
     mdy_rets = daily_log_returns(mdy_daily)
-    mdy_returns_by_ts = {ts: ret for ts, ret in mdy_rets}
+    mdy_returns_by_ts = {date: ret for date, ret in mdy_rets}
     print(f"MDY: {len(mdy_rets)} daily returns loaded.\n")
 
     # Step 2: Fetch all stocks and calculate signals
