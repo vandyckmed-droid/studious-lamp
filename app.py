@@ -56,18 +56,52 @@ def fetch_prices(ticker):
         return None
 
 
+# ── Yahoo Finance session (auth) ─────────────────
+
+_yahoo_session = None
+_yahoo_crumb = None
+
+
+def get_yahoo_auth():
+    """Get authenticated session + crumb for Yahoo Finance API."""
+    global _yahoo_session, _yahoo_crumb
+
+    if _yahoo_session and _yahoo_crumb:
+        return _yahoo_session, _yahoo_crumb
+
+    print("  Authenticating with Yahoo Finance...")
+    session = requests.Session()
+    session.headers["User-Agent"] = "Mozilla/5.0"
+
+    # Get cookie
+    session.get("https://fc.yahoo.com", timeout=10)
+
+    # Get crumb
+    r = session.get(
+        "https://query2.finance.yahoo.com/v1/test/getcrumb", timeout=10
+    )
+    crumb = r.text
+
+    _yahoo_session = session
+    _yahoo_crumb = crumb
+    print(f"  Auth OK (crumb={crumb[:8]}...)\n")
+    return session, crumb
+
+
 # ── Fundamentals fetching ────────────────────────
 
 def fetch_fundamentals(ticker):
     """Fetch GPA, leverage, EBIT/EV from Yahoo Finance."""
-    url = f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/{ticker}"
+    session, crumb = get_yahoo_auth()
+
+    url = f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{ticker}"
     params = {
-        "modules": "incomeStatementHistory,balanceSheetHistory,defaultKeyStatistics"
+        "modules": "incomeStatementHistory,balanceSheetHistory,defaultKeyStatistics",
+        "crumb": crumb,
     }
-    headers = {"User-Agent": "Mozilla/5.0"}
 
     try:
-        r = requests.get(url, params=params, headers=headers, timeout=10)
+        r = session.get(url, params=params, timeout=10)
         data = r.json()
         result = data["quoteSummary"]["result"][0]
 
