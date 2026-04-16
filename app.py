@@ -155,7 +155,10 @@ def calc_signals(daily, mdy_returns_by_ts):
         return None
 
     alpha, beta, residuals = ols(stock_x, stock_y)
-    resid_mom = sum(residuals)
+    # Residual momentum = sum(stock_ret - beta * mdy_ret)
+    # This strips out market exposure but keeps the stock's alpha
+    # (OLS residuals sum to 0 by definition, so we exclude alpha from subtraction)
+    resid_mom = sum(yi - beta * xi for xi, yi in zip(stock_x, stock_y))
 
     return {
         "mom_12_1": round(mom_12_1, 4),
