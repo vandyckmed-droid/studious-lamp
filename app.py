@@ -1,5 +1,5 @@
 """
-MDY Universe — Step 1: Tickers + Closing Prices
+MDY Universe — Step 2: 12-1 Log Momentum
 
 Run this in Pythonista on your iPhone/iPad.
 No extra packages needed — uses only built-in modules.
@@ -11,7 +11,7 @@ Setup:
 """
 
 import os
-import json
+import math
 import time
 import requests
 
@@ -31,10 +31,10 @@ def load_tickers(path="tickers.txt"):
     return sorted(set(tickers))
 
 
-def fetch_price(ticker):
-    """Fetch 1 month of daily closes for a single ticker from Yahoo Finance."""
+def fetch_prices(ticker):
+    """Fetch ~13 months of daily closes for a single ticker."""
     now = int(time.time())
-    start = now - (35 * 86400)  # ~35 days back to ensure 1 month of trading days
+    start = now - (400 * 86400)  # ~13 months back
 
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
     params = {
@@ -49,20 +49,66 @@ def fetch_price(ticker):
         data = r.json()
         result = data["chart"]["result"][0]
         closes = result["indicators"]["quote"][0]["close"]
-        # Filter out None values
-        valid = [c for c in closes if c is not None]
-        if len(valid) >= 2:
-            return {
-                "last_close": round(valid[-1], 2),
-                "first_close": round(valid[0], 2),
-            }
+        timestamps = result["timestamp"]
+
+        # Pair timestamps with closes, filter out nulls
+        daily = [
+            (ts, c) for ts, c in zip(timestamps, closes)
+            if c is not None
+        ]
+        return daily
     except Exception:
-        pass
-    return None
+        return None
 
 
-def fetch_all_prices(tickers):
-    """Fetch prices for all tickers, one at a time."""
+def calc_momentum(daily):
+    """Calculate 12-1 log momentum from daily price series.
+
+    Returns dict with:
+      - mom_12_1: ln(P_1m_ago) - ln(P_12m_ago)
+      - last_close: most recent price
+      - p_1m: price ~1 month ago
+      - p_12m: price ~12 months ago
+    """
+    if not daily or len(daily) < 200:
+        return None
+
+    last_ts = daily[-1][0]
+    last_close = daily[-1][1]
+
+    # Find price closest to 1 month ago (~21 trading days)
+    target_1m = last_ts - (30 * 86400)
+    # Find price closest to 12 months ago (~252 trading days)
+    target_12m = last_ts - (365 * 86400)
+
+    def closest_price(daily, target_ts):
+        best = None
+        best_diff = float("inf")
+        for ts, c in daily:
+            diff = abs(ts - target_ts)
+            if diff < best_diff:
+                best_diff = diff
+                best = c
+        return best
+
+    p_1m = closest_price(daily, target_1m)
+    p_12m = closest_price(daily, target_12m)
+
+    if not p_1m or not p_12m or p_12m <= 0 or p_1m <= 0:
+        return None
+
+    mom = math.log(p_1m) - math.log(p_12m)
+
+    return {
+        "mom_12_1": round(mom, 4),
+        "last_close": round(last_close, 2),
+        "p_1m": round(p_1m, 2),
+        "p_12m": round(p_12m, 2),
+    }
+
+
+def fetch_all(tickers):
+    """Fetch data and calculate momentum for all tickers."""
     results = {}
     total = len(tickers)
 
@@ -70,44 +116,48 @@ def fetch_all_prices(tickers):
         pct = int((i + 1) / total * 100)
         print(f"  [{pct:3d}%] {ticker}...", end="")
 
-        data = fetch_price(ticker)
-        if data:
-            results[ticker] = data
-            print(f" ${data['last_close']}")
+        daily = fetch_prices(ticker)
+        if daily:
+            mom = calc_momentum(daily)
+            if mom:
+                results[ticker] = mom
+                sign = "+" if mom["mom_12_1"] >= 0 else ""
+                print(f" {sign}{mom['mom_12_1']:.4f}")
+            else:
+                print(" not enough data")
         else:
             print(" failed")
 
-        # Small delay to avoid getting rate-limited
+        # Small delay to avoid rate-limiting
         if (i + 1) % 5 == 0:
             time.sleep(0.5)
 
     return results
 
 
-def display(tickers, prices):
-    """Print a ranked table to the console."""
+def display(tickers, data):
+    """Print a ranked table sorted by 12-1 momentum."""
     rows = []
     for t in tickers:
-        p = prices.get(t)
-        if p:
-            chg = round((p["last_close"] - p["first_close"]) / p["first_close"] * 100, 2)
-            rows.append((t, p["last_close"], chg))
+        d = data.get(t)
+        if d:
+            rows.append((t, d["last_close"], d["p_1m"], d["p_12m"], d["mom_12_1"]))
 
-    # Sort by 1-month change, best first
-    rows.sort(key=lambda x: x[2], reverse=True)
+    # Sort by 12-1 momentum, best first
+    rows.sort(key=lambda x: x[4], reverse=True)
 
     print()
-    print("=" * 45)
-    print("  MDY UNIVERSE — CLOSING PRICES")
-    print(f"  {len(rows)} stocks | sorted by 1M change")
-    print("=" * 45)
+    print("=" * 62)
+    print("  MDY UNIVERSE — 12-1 LOG MOMENTUM")
+    print(f"  {len(rows)} stocks | sorted by momentum (high = strong)")
+    print("=" * 62)
     print()
-    print(f"  {'#':>4}  {'Ticker':<8} {'Last Close':>11} {'1M Chg %':>9}")
-    print(f"  {'—'*4}  {'—'*8} {'—'*11} {'—'*9}")
+    print(f"  {'#':>4}  {'Ticker':<7} {'Price':>8} {'P(1m)':>8} {'P(12m)':>8} {'Mom 12-1':>9}")
+    print(f"  {'—'*4}  {'—'*7} {'—'*8} {'—'*8} {'—'*8} {'—'*9}")
 
-    for i, (ticker, close, chg) in enumerate(rows, 1):
-        sign = "+" if chg >= 0 else ""
-        print(f"  {i:4d}  {ticker:<8} ${close:>10.2f} {sign}{chg:>8.2f}%")
+    for i, (ticker, close, p1m, p12m, mom) in enumerate(rows, 1):
+        sign = "+" if mom >= 0 else ""
+        print(f"  {i:4d}  {ticker:<7} {close:>8.2f} {p1m:>8.2f} {p12m:>8.2f} {sign}{mom:>8.4f}")
 
     print()
     print(f"  {len(rows)} of {len(tickers)} tickers loaded.")
@@ -119,7 +169,7 @@ def display(tickers, prices):
 if __name__ == "__main__":
     tickers = load_tickers()
     print(f"Loaded {len(tickers)} tickers from tickers.txt")
-    print(f"Fetching prices (this takes a few minutes)...\n")
+    print(f"Fetching 13 months of prices (this takes a few minutes)...\n")
 
-    prices = fetch_all_prices(tickers)
-    display(tickers, prices)
+    data = fetch_all(tickers)
+    display(tickers, data)
