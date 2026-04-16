@@ -1,5 +1,5 @@
 """
-MDY Universe — Step 4: Momentum + Fundamentals + Z-Scores
+MDY Universe — Momentum + Fundamentals + Z-Scores
 
 Signals:
   1. Mom 12-1   — 12-1 log momentum
@@ -9,29 +9,87 @@ Signals:
   5. EBIT/EV    — EBIT / enterprise value
 
 All signals are cross-sectionally z-scored.
+Prices from Yahoo Finance, fundamentals from FMP (cached).
 
 Run in Pythonista — no extra packages needed.
 """
 
+import json
 import os
 import math
 import time
 import requests
 
+FMP_BASE = "https://financialmodelingprep.com/api/v3"
+FMP_BUDGET = 240  # max API calls per run (free tier = 250/day, keep buffer)
+CACHE_MAX_DAYS = 30
+
+
+def _script_path(filename):
+    """Resolve a file path relative to the script directory."""
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
+
 
 def load_tickers(path="tickers.txt"):
     """Read tickers from tickers.txt (one per line, # = comment)."""
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    full_path = os.path.join(script_dir, path)
-
     tickers = []
-    with open(full_path, "r") as f:
+    with open(_script_path(path), "r") as f:
         for line in f:
             line = line.strip()
             if line and not line.startswith("#"):
                 tickers.append(line.upper())
-
     return sorted(set(tickers))
+
+
+def load_config(path="config.txt"):
+    """Read FMP API key from config.txt."""
+    fp = _script_path(path)
+    try:
+        with open(fp, "r") as f:
+            key = f.read().strip()
+        if not key:
+            raise ValueError
+        return key
+    except (FileNotFoundError, ValueError):
+        print("ERROR: Missing or empty config.txt")
+        print("  Create config.txt with your FMP API key (one line).")
+        print("  Sign up free at https://financialmodelingprep.com")
+        raise SystemExit(1)
+
+
+# ── FMP cache ───────────────────────────────────
+
+def load_cache(path="fmp_cache.json"):
+    """Load cached fundamentals from JSON file."""
+    fp = _script_path(path)
+    try:
+        with open(fp, "r") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def save_cache(cache, path="fmp_cache.json"):
+    """Save fundamentals cache to JSON file."""
+    fp = _script_path(path)
+    with open(fp, "w") as f:
+        json.dump(cache, f, indent=1)
+
+
+def _cache_is_fresh(entry):
+    """Check if a cache entry is less than CACHE_MAX_DAYS old."""
+    fetched = entry.get("fetched", "")
+    if not fetched:
+        return False
+    try:
+        y, m, d = int(fetched[:4]), int(fetched[5:7]), int(fetched[8:10])
+        now = time.gmtime()
+        # Approximate days difference
+        fetched_days = y * 365 + m * 30 + d
+        now_days = now.tm_year * 365 + now.tm_mon * 30 + now.tm_mday
+        return (now_days - fetched_days) < CACHE_MAX_DAYS
+    except (ValueError, IndexError):
+        return False
 
 
 # ── Price fetching ───────────────────────────────
@@ -56,89 +114,94 @@ def fetch_prices(ticker):
         return None
 
 
-# ── Yahoo Finance session (auth) ─────────────────
+# ── FMP fundamentals fetching ───────────────────
 
-_yahoo_session = None
-_yahoo_crumb = None
+def fetch_fundamentals_fmp(ticker, api_key):
+    """Fetch raw fundamental data from FMP (3 API calls). Returns dict or None."""
+    out = {}
 
-
-def get_yahoo_auth():
-    """Get authenticated session + crumb for Yahoo Finance API."""
-    global _yahoo_session, _yahoo_crumb
-
-    if _yahoo_session and _yahoo_crumb:
-        return _yahoo_session, _yahoo_crumb
-
-    print("  Authenticating with Yahoo Finance...")
-    session = requests.Session()
-    session.headers["User-Agent"] = "Mozilla/5.0"
-
-    # Get cookie
-    session.get("https://fc.yahoo.com", timeout=10)
-
-    # Get crumb
-    r = session.get(
-        "https://query2.finance.yahoo.com/v1/test/getcrumb", timeout=10
-    )
-    crumb = r.text
-
-    _yahoo_session = session
-    _yahoo_crumb = crumb
-    print(f"  Auth OK (crumb={crumb[:8]}...)\n")
-    return session, crumb
-
-
-# ── Fundamentals fetching ────────────────────────
-
-def fetch_fundamentals(ticker):
-    """Fetch GPA, leverage, EBIT/EV from Yahoo Finance."""
-    session, crumb = get_yahoo_auth()
-
-    url = f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{ticker}"
-    params = {
-        "modules": "incomeStatementHistory,balanceSheetHistory,defaultKeyStatistics",
-        "crumb": crumb,
-    }
-
+    # 1. Income statement
     try:
-        r = session.get(url, params=params, timeout=10)
-        data = r.json()
-        result = data["quoteSummary"]["result"][0]
-
-        # Most recent annual income statement
-        income = result["incomeStatementHistory"]["incomeStatementHistory"][0]
-        gross_profit = income.get("grossProfit", {}).get("raw")
-        ebit = income.get("ebit", {}).get("raw")
-
-        # Most recent balance sheet
-        balance = result["balanceSheetHistory"]["balanceSheetStatements"][0]
-        total_assets = balance.get("totalAssets", {}).get("raw")
-
-        long_debt = balance.get("longTermDebt", {}).get("raw", 0) or 0
-        short_debt = balance.get("shortLongTermDebt", {}).get("raw", 0) or 0
-        cash = balance.get("cash", {}).get("raw", 0) or 0
-
-        # Enterprise value
-        ev = result["defaultKeyStatistics"].get("enterpriseValue", {}).get("raw")
-
-        # Calculate metrics
-        net_debt = long_debt + short_debt - cash
-
-        out = {}
-
-        if gross_profit is not None and total_assets and total_assets > 0:
-            out["gpa"] = gross_profit / total_assets
-
-        if total_assets and total_assets > 0:
-            out["leverage"] = -(net_debt / total_assets)
-
-        if ebit is not None and ev and ev > 0:
-            out["ebit_ev"] = ebit / ev
-
-        return out if out else None
-
+        url = f"{FMP_BASE}/income-statement/{ticker}"
+        r = requests.get(url, params={"period": "annual", "limit": 1, "apikey": api_key}, timeout=10)
+        rows = r.json()
+        if rows and isinstance(rows, list):
+            out["grossProfit"] = rows[0].get("grossProfit")
+            out["ebit"] = rows[0].get("operatingIncome")
     except Exception:
+        pass
+
+    # 2. Balance sheet
+    try:
+        url = f"{FMP_BASE}/balance-sheet-statement/{ticker}"
+        r = requests.get(url, params={"period": "annual", "limit": 1, "apikey": api_key}, timeout=10)
+        rows = r.json()
+        if rows and isinstance(rows, list):
+            out["totalAssets"] = rows[0].get("totalAssets")
+            out["totalDebt"] = rows[0].get("totalDebt", 0) or 0
+            out["cash"] = rows[0].get("cashAndCashEquivalents", 0) or 0
+    except Exception:
+        pass
+
+    # 3. Enterprise value
+    try:
+        url = f"{FMP_BASE}/enterprise-values/{ticker}"
+        r = requests.get(url, params={"period": "annual", "limit": 1, "apikey": api_key}, timeout=10)
+        rows = r.json()
+        if rows and isinstance(rows, list):
+            out["enterpriseValue"] = rows[0].get("enterpriseValue")
+    except Exception:
+        pass
+
+    if not out.get("totalAssets"):
         return None
+
+    out["fetched"] = time.strftime("%Y-%m-%d", time.gmtime())
+    return out
+
+
+def get_fundamentals(ticker, api_key, cache, api_calls):
+    """Get fundamentals from cache or FMP. Returns (ratios_dict, api_calls_used)."""
+    # Use cache if fresh
+    if ticker in cache and _cache_is_fresh(cache[ticker]):
+        ratios = _calc_ratios(cache[ticker])
+        return ratios, 0
+
+    # Budget check (3 calls per ticker)
+    if api_calls + 3 > FMP_BUDGET:
+        # Over budget — fall back to stale cache if available
+        if ticker in cache:
+            return _calc_ratios(cache[ticker]), 0
+        return None, 0
+
+    raw = fetch_fundamentals_fmp(ticker, api_key)
+    if raw:
+        cache[ticker] = raw
+        return _calc_ratios(raw), 3
+    return None, 3
+
+
+def _calc_ratios(raw):
+    """Calculate GPA, leverage, EBIT/EV from raw cached data."""
+    out = {}
+    gross_profit = raw.get("grossProfit")
+    total_assets = raw.get("totalAssets")
+    total_debt = raw.get("totalDebt", 0) or 0
+    cash = raw.get("cash", 0) or 0
+    ebit = raw.get("ebit")
+    ev = raw.get("enterpriseValue")
+
+    if gross_profit is not None and total_assets and total_assets > 0:
+        out["gpa"] = gross_profit / total_assets
+
+    if total_assets and total_assets > 0:
+        net_debt = total_debt - cash
+        out["leverage"] = -(net_debt / total_assets)
+
+    if ebit is not None and ev and ev > 0:
+        out["ebit_ev"] = ebit / ev
+
+    return out if out else None
 
 
 # ── Math helpers ─────────────────────────────────
@@ -254,8 +317,18 @@ def calc_momentum(daily, mdy_returns_by_date):
 
 # ── Main fetch loop ──────────────────────────────
 
-def fetch_all(tickers, mdy_returns_by_date):
+def fetch_all(tickers, mdy_returns_by_date, api_key):
     """Fetch prices + fundamentals and calculate all signals."""
+    cache = load_cache()
+    api_calls = 0
+
+    # Count cache status
+    fresh = sum(1 for t in tickers if t in cache and _cache_is_fresh(cache[t]))
+    stale = sum(1 for t in tickers if t in cache and not _cache_is_fresh(cache[t]))
+    missing = len(tickers) - fresh - stale
+    print(f"  Cache: {fresh} fresh, {stale} stale, {missing} missing")
+    print(f"  Budget: {FMP_BUDGET} API calls this run\n")
+
     data = {}
     total = len(tickers)
 
@@ -263,12 +336,13 @@ def fetch_all(tickers, mdy_returns_by_date):
         pct = int((i + 1) / total * 100)
         print(f"  [{pct:3d}%] {ticker}...", end="")
 
-        # Prices + momentum
+        # Prices + momentum (Yahoo — no daily limit)
         daily = fetch_prices(ticker)
         mom = calc_momentum(daily, mdy_returns_by_date) if daily else None
 
-        # Fundamentals
-        fundies = fetch_fundamentals(ticker)
+        # Fundamentals (FMP with cache)
+        fundies, calls_used = get_fundamentals(ticker, api_key, cache, api_calls)
+        api_calls += calls_used
 
         if mom or fundies:
             entry = {}
@@ -283,6 +357,9 @@ def fetch_all(tickers, mdy_returns_by_date):
                     parts.append(f"mom={entry['mom_12_1']:+.3f}")
                 if "gpa" in entry:
                     parts.append(f"gpa={entry['gpa']:.3f}")
+                src = "cache" if calls_used == 0 and fundies else "fmp" if fundies else ""
+                if src:
+                    parts.append(f"[{src}]")
                 print(f" {' '.join(parts)}")
             else:
                 print(" partial data")
@@ -291,6 +368,12 @@ def fetch_all(tickers, mdy_returns_by_date):
 
         if (i + 1) % 5 == 0:
             time.sleep(0.5)
+
+    # Persist cache after all fetches
+    save_cache(cache)
+    print(f"\n  FMP API calls used: {api_calls} / {FMP_BUDGET}")
+    cached_count = sum(1 for t in tickers if t in cache)
+    print(f"  Cache now has {cached_count} / {total} tickers\n")
 
     return data
 
@@ -362,6 +445,7 @@ def display(tickers, data):
 # ── Run ──────────────────────────────────────────
 
 if __name__ == "__main__":
+    api_key = load_config()
     tickers = load_tickers()
     print(f"Loaded {len(tickers)} tickers from tickers.txt\n")
 
@@ -377,6 +461,6 @@ if __name__ == "__main__":
     print(f"MDY: {len(mdy_rets)} daily returns loaded.\n")
 
     # Fetch all stocks
-    print("Fetching stock prices + fundamentals...\n")
-    data = fetch_all(tickers, mdy_returns_by_date)
+    print("Fetching stock data...\n")
+    data = fetch_all(tickers, mdy_returns_by_date, api_key)
     display(tickers, data)
