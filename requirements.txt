@@ -1,3 +1,5 @@
-# No external packages needed — uses only Python built-ins + requests
-# This file is kept for reference if running outside Pythonista
+# Pythonista already bundles requests, beautifulsoup4, and numpy.
+# This file is for running outside Pythonista (desktop, CI).
 requests
+beautifulsoup4
+numpy

@@ -1,7 +1,8 @@
 __pycache__/
 *.pyc
-.env
-.DS_Store
-venv/
+*.pyo
+
+# Local SQLite database and API key
+data/quant.db
+data/quant.db-journal
 config.txt
-fmp_cache.json
