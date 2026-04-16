@@ -1,5 +1,5 @@
 """
-MDY Universe — Step 2: 12-1 Log Momentum
+MDY Universe — Step 3: 12-1 Momentum + Residual Momentum
 
 Run this in Pythonista on your iPhone/iPad.
 No extra packages needed — uses only built-in modules.
@@ -51,7 +51,6 @@ def fetch_prices(ticker):
         closes = result["indicators"]["quote"][0]["close"]
         timestamps = result["timestamp"]
 
-        # Pair timestamps with closes, filter out nulls
         daily = [
             (ts, c) for ts, c in zip(timestamps, closes)
             if c is not None
@@ -61,14 +60,50 @@ def fetch_prices(ticker):
         return None
 
 
-def calc_momentum(daily):
-    """Calculate 12-1 log momentum from daily price series.
+def daily_log_returns(daily):
+    """Convert daily (timestamp, close) pairs to daily log returns."""
+    returns = []
+    for i in range(1, len(daily)):
+        ts = daily[i][0]
+        lr = math.log(daily[i][1]) - math.log(daily[i - 1][1])
+        returns.append((ts, lr))
+    return returns
 
-    Returns dict with:
-      - mom_12_1: ln(P_1m_ago) - ln(P_12m_ago)
-      - last_close: most recent price
-      - p_1m: price ~1 month ago
-      - p_12m: price ~12 months ago
+
+def closest_price(daily, target_ts):
+    """Find price closest to a target timestamp."""
+    best = None
+    best_diff = float("inf")
+    for ts, c in daily:
+        diff = abs(ts - target_ts)
+        if diff < best_diff:
+            best_diff = diff
+            best = c
+    return best
+
+
+def ols(x, y):
+    """Simple OLS regression: y = alpha + beta * x.
+
+    Returns (alpha, beta, residuals).
+    """
+    n = len(x)
+    sum_x = sum(x)
+    sum_y = sum(y)
+    sum_xy = sum(xi * yi for xi, yi in zip(x, y))
+    sum_x2 = sum(xi * xi for xi in x)
+
+    beta = (n * sum_xy - sum_x * sum_y) / (n * sum_x2 - sum_x * sum_x)
+    alpha = (sum_y - beta * sum_x) / n
+
+    residuals = [yi - alpha - beta * xi for xi, yi in zip(x, y)]
+    return alpha, beta, residuals
+
+
+def calc_signals(daily, mdy_returns_by_ts):
+    """Calculate 12-1 momentum and residual momentum.
+
+    mdy_returns_by_ts: dict of {timestamp: MDY daily log return}
     """
     if not daily or len(daily) < 200:
         return None
@@ -76,20 +111,9 @@ def calc_momentum(daily):
     last_ts = daily[-1][0]
     last_close = daily[-1][1]
 
-    # Find price closest to 1 month ago (~21 trading days)
+    # 12-1 momentum: ln(P_1m) - ln(P_12m)
     target_1m = last_ts - (30 * 86400)
-    # Find price closest to 12 months ago (~252 trading days)
     target_12m = last_ts - (365 * 86400)
-
-    def closest_price(daily, target_ts):
-        best = None
-        best_diff = float("inf")
-        for ts, c in daily:
-            diff = abs(ts - target_ts)
-            if diff < best_diff:
-                best_diff = diff
-                best = c
-        return best
 
     p_1m = closest_price(daily, target_1m)
     p_12m = closest_price(daily, target_12m)
@@ -97,18 +121,44 @@ def calc_momentum(daily):
     if not p_1m or not p_12m or p_12m <= 0 or p_1m <= 0:
         return None
 
-    mom = math.log(p_1m) - math.log(p_12m)
+    mom_12_1 = math.log(p_1m) - math.log(p_12m)
+
+    # Residual momentum: regress stock daily returns on MDY daily returns
+    # over the 12-1 window, then sum the residuals
+    stock_rets = daily_log_returns(daily)
+
+    # Filter to the 12-1 window (skip most recent month)
+    cutoff_1m = last_ts - (30 * 86400)
+    cutoff_12m = last_ts - (365 * 86400)
+
+    stock_x = []  # MDY returns
+    stock_y = []  # stock returns
+
+    for ts, ret in stock_rets:
+        if cutoff_12m <= ts <= cutoff_1m:
+            # Find matching MDY return (closest timestamp)
+            mdy_ret = mdy_returns_by_ts.get(ts)
+            if mdy_ret is not None:
+                stock_x.append(mdy_ret)
+                stock_y.append(ret)
+
+    if len(stock_x) < 100:
+        # Not enough overlapping data points
+        return None
+
+    alpha, beta, residuals = ols(stock_x, stock_y)
+    resid_mom = sum(residuals)
 
     return {
-        "mom_12_1": round(mom, 4),
+        "mom_12_1": round(mom_12_1, 4),
+        "resid_mom": round(resid_mom, 4),
+        "beta": round(beta, 3),
         "last_close": round(last_close, 2),
-        "p_1m": round(p_1m, 2),
-        "p_12m": round(p_12m, 2),
     }
 
 
-def fetch_all(tickers):
-    """Fetch data and calculate momentum for all tickers."""
+def fetch_all(tickers, mdy_returns_by_ts):
+    """Fetch data and calculate signals for all tickers."""
     results = {}
     total = len(tickers)
 
@@ -118,17 +168,15 @@ def fetch_all(tickers):
 
         daily = fetch_prices(ticker)
         if daily:
-            mom = calc_momentum(daily)
-            if mom:
-                results[ticker] = mom
-                sign = "+" if mom["mom_12_1"] >= 0 else ""
-                print(f" {sign}{mom['mom_12_1']:.4f}")
+            signals = calc_signals(daily, mdy_returns_by_ts)
+            if signals:
+                results[ticker] = signals
+                print(f" mom={signals['mom_12_1']:+.4f}  resid={signals['resid_mom']:+.4f}")
             else:
                 print(" not enough data")
         else:
             print(" failed")
 
-        # Small delay to avoid rate-limiting
         if (i + 1) % 5 == 0:
             time.sleep(0.5)
 
@@ -136,28 +184,27 @@ def fetch_all(tickers):
 
 
 def display(tickers, data):
-    """Print a ranked table sorted by 12-1 momentum."""
+    """Print a ranked table sorted by residual momentum."""
     rows = []
     for t in tickers:
         d = data.get(t)
         if d:
-            rows.append((t, d["last_close"], d["p_1m"], d["p_12m"], d["mom_12_1"]))
+            rows.append((t, d["last_close"], d["mom_12_1"], d["resid_mom"], d["beta"]))
 
-    # Sort by 12-1 momentum, best first
-    rows.sort(key=lambda x: x[4], reverse=True)
+    # Sort by residual momentum, best first
+    rows.sort(key=lambda x: x[3], reverse=True)
 
     print()
-    print("=" * 62)
-    print("  MDY UNIVERSE — 12-1 LOG MOMENTUM")
-    print(f"  {len(rows)} stocks | sorted by momentum (high = strong)")
-    print("=" * 62)
+    print("=" * 68)
+    print("  MDY UNIVERSE — 12-1 MOMENTUM + RESIDUAL MOMENTUM")
+    print(f"  {len(rows)} stocks | sorted by residual momentum")
+    print("=" * 68)
     print()
-    print(f"  {'#':>4}  {'Ticker':<7} {'Price':>8} {'P(1m)':>8} {'P(12m)':>8} {'Mom 12-1':>9}")
-    print(f"  {'—'*4}  {'—'*7} {'—'*8} {'—'*8} {'—'*8} {'—'*9}")
+    print(f"  {'#':>4}  {'Ticker':<7} {'Price':>8} {'Mom12-1':>8} {'ResMom':>8} {'Beta':>6}")
+    print(f"  {'—'*4}  {'—'*7} {'—'*8} {'—'*8} {'—'*8} {'—'*6}")
 
-    for i, (ticker, close, p1m, p12m, mom) in enumerate(rows, 1):
-        sign = "+" if mom >= 0 else ""
-        print(f"  {i:4d}  {ticker:<7} {close:>8.2f} {p1m:>8.2f} {p12m:>8.2f} {sign}{mom:>8.4f}")
+    for i, (ticker, close, mom, resid, beta) in enumerate(rows, 1):
+        print(f"  {i:4d}  {ticker:<7} {close:>8.2f} {mom:>+8.4f} {resid:>+8.4f} {beta:>6.2f}")
 
     print()
     print(f"  {len(rows)} of {len(tickers)} tickers loaded.")
@@ -168,8 +215,20 @@ def display(tickers, data):
 
 if __name__ == "__main__":
     tickers = load_tickers()
-    print(f"Loaded {len(tickers)} tickers from tickers.txt")
-    print(f"Fetching 13 months of prices (this takes a few minutes)...\n")
+    print(f"Loaded {len(tickers)} tickers from tickers.txt\n")
 
-    data = fetch_all(tickers)
+    # Step 1: Fetch MDY (the benchmark) first
+    print("Fetching MDY benchmark prices...")
+    mdy_daily = fetch_prices("MDY")
+    if not mdy_daily:
+        print("ERROR: Could not fetch MDY prices.")
+        raise SystemExit(1)
+
+    mdy_rets = daily_log_returns(mdy_daily)
+    mdy_returns_by_ts = {ts: ret for ts, ret in mdy_rets}
+    print(f"MDY: {len(mdy_rets)} daily returns loaded.\n")
+
+    # Step 2: Fetch all stocks and calculate signals
+    print("Fetching stock prices...\n")
+    data = fetch_all(tickers, mdy_returns_by_ts)
     display(tickers, data)
