@@ -1,15 +1,21 @@
 # studious-lamp
 
-Quantitative midcap stock ranking tool. Runs in [Pyto](https://pyto.app) on iPhone/iPad.
+Quantitative midcap stock ranking tool. Runs in [Pythonista](http://omz-software.com/pythonista/) on iPhone/iPad.
 
-## Setup in Pyto
+## Setup (one time)
 
-1. Open Pyto on your phone
-2. Go to the **PyPI** tab (puzzle piece icon)
-3. Install these packages: `yfinance`, `pandas`, `lxml`
-4. Clone or download this repo
-5. Open `app.py` and tap **Run**
+1. Open Pythonista
+2. Install StaSh (a terminal for Pythonista) — tap **+** > **Script**, paste this, and run it:
+   ```python
+   import requests as r; exec(r.get('https://bit.ly/get-stash').text)
+   ```
+3. Restart Pythonista
+4. Open `launch_stash.py` and run it
+5. In StaSh, type: `pip install yfinance`
+6. Clone this repo or copy the files into Pythonista
 
-## What it does
+## Usage
 
-Pulls the ~400 S&P MidCap 400 (MDY) stocks, downloads 1 month of closing prices, and shows a ranked table sorted by 1-month performance.
+1. Edit `tickers.txt` with your universe (one ticker per line)
+2. Run `app.py`
+3. See a ranked table of stocks sorted by 1-month price change
